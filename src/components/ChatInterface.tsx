@@ -1,8 +1,17 @@
-
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+import { Send, Bot, User } from "lucide-react";
+import { ChatMessage } from "@/types/job";
+// import { JobCard } from "./JobCard"; // optional: wire later if you want cards
 
 interface ChatInterfaceProps {
   initialMessage?: string;
 }
+
+const API_URL = "https://doctor-bot-backend.onrender.com"; // ← your Render URL
+const SESSION_KEY = "sendoc_session_id";
 
 export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -10,77 +19,126 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const sendMessage = (messageText: string) => {
-    if (!messageText.trim()) return;
+  // stable session id per browser
+  const sessionId = useMemo(() => {
+    let id = localStorage.getItem(SESSION_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(SESSION_KEY, id);
+    }
+    return id;
+  }, []);
 
+  useEffect(() => {
+    if (initialMessage) {
+      // fire a first message if the page wants to start with one
+      void sendMessage(initialMessage);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function sendMessage(messageText: string) {
+    const text = messageText.trim();
+    if (!text) return;
+
+    // push user message
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: `${Date.now()}-user`,
       role: "user",
-      content: messageText,
+      content: text,
       timestamp: new Date(),
     };
-
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
 
-    // Simulate AI response with job recommendations
-    setTimeout(() => {
-      let botResponse = "";
-      let recommendedJobs = [];
-
-      // Simple keyword matching for demo
-      const input = messageText.toLowerCase();
-      
-      if (input.includes("crna") || input.includes("anesthesia")) {
-        botResponse = "I found some excellent CRNA and anesthesia opportunities for you. The Pittsburgh cardiac position at $95/hour is particularly strong, and Chicago offers $280/hour for anesthesiologists. Both include solid call schedules.";
-        recommendedJobs = sampleJobs.filter(job => 
-          job.profession === "CRNA" || job.specialty.includes("Anesthesia")
-        );
-      } else if (input.includes("urgent care") || input.includes("primary")) {
-        botResponse = "Here are some urgent care opportunities that might interest you. The Indianapolis hybrid position offers good work-life balance at $140/hour with telemedicine flexibility.";
-        recommendedJobs = sampleJobs.filter(job => 
-          job.specialty.includes("Urgent Care")
-        );
-      } else if (input.includes("high pay") || input.includes("salary") || input.includes("rate") || input.includes("150") || input.includes("paying")) {
-        botResponse = "Looking at top-paying opportunities, interventional radiology in Charleston, WV offers $450/day, and Chicago anesthesiology pays $280/hour. These represent some of the higher compensation ranges in their respective markets.";
-        recommendedJobs = sampleJobs.filter(job => 
-          (job.rate_unit === "hour" && job.rate_numeric > 100) || 
-          (job.rate_unit === "day" && job.rate_numeric > 300)
-        );
-      } else if (input.includes("pennsylvania") || input.includes("pa")) {
-        botResponse = "Pennsylvania has some great opportunities. The Pittsburgh CRNA position offers $95/hour with travel and lodging covered. The cardiac surgery exposure would be excellent for your career development.";
-        recommendedJobs = sampleJobs.filter(job => job.state === "PA");
-      } else if (input.includes("balance") || input.includes("lifestyle")) {
-        botResponse = "For excellent work-life balance, I'd recommend the Charleston NP position with a 4-day work week and the Indianapolis urgent care role with hybrid scheduling. Both offer great lifestyle benefits.";
-        recommendedJobs = sampleJobs.filter(job => 
-          job.specialty.includes("Urology") || job.specialty.includes("Urgent Care")
-        );
-      } else {
-        botResponse = "Here are some current opportunities that match healthcare professionals like you. I've included a mix of specialties and locations based on market demand and competitive compensation.";
-        recommendedJobs = sampleJobs.slice(0, 3);
-      }
-
-      const assistantMessage: ChatMessage = {
-        id: Date.now().toString(),
-        role: "assistant", 
-        content: botResponse,
+    // create a placeholder assistant message we will stream into
+    const assistantId = `${Date.now()}-assistant`;
+    setMessages(prev => [
+      ...prev,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
         timestamp: new Date(),
-        jobs: recommendedJobs,
-      };
+      },
+    ]);
 
-      setMessages(prev => [...prev, assistantMessage]);
+    try {
+      const res = await fetch(`${API_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, session_id: sessionId }),
+      });
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      if (!reader) throw new Error("No reader on response");
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // parse SSE chunks separated by blank lines
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const ln of parts) {
+          if (!ln.startsWith("data:")) continue;
+          const payload = JSON.parse(ln.slice(5).trim());
+
+          if (payload.type === "text") {
+            const delta: string = payload.data || "";
+            setMessages(prev =>
+              prev.map(m =>
+                m.id === assistantId ? { ...m, content: (m.content || "") + delta } : m
+              )
+            );
+          } else if (payload.type === "blocks") {
+            // OPTIONAL: if you want to render real job cards with <JobCard/>,
+            // map payload.data[0].items into your Job type and attach to the assistant message.
+            // For now we just append a friendly note that results were included.
+            setMessages(prev =>
+              prev.map(m =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content:
+                        (m.content || "") +
+                        "\n\nI’ve added a few positions below based on what you asked.",
+                    }
+                  : m
+              )
+            );
+            // Example (wire later):
+            // const items = payload.data?.[0]?.items ?? [];
+            // setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, jobs: mapToYourJobType(items) } : m));
+          }
+        }
+      }
+    } catch (err) {
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === assistantId
+            ? { ...m, content: (m.content || "") + "\n(Sorry, something went wrong.)" }
+            : m
+        )
+      );
+    } finally {
       setIsLoading(false);
-    }, 1500);
-  };
+    }
+  }
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    sendMessage(inputValue);
+    void sendMessage(inputValue);
     setInputValue("");
   };
 
   const handleSuggestionClick = (suggestion: string) => {
-    sendMessage(suggestion);
+    void sendMessage(suggestion);
   };
 
   return (
@@ -104,13 +162,15 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
                       ? 'bg-primary text-primary-foreground' 
                       : 'bg-surface border border-border'
                   }`}>
-                    <p className="text-sm leading-relaxed">{message.content}</p>
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                      {message.content}
+                    </p>
                   </Card>
                 </div>
               </div>
-              
-              {/* Job Results */}
-              {message.jobs && message.jobs.length > 0 && (
+
+              {/* OPTIONAL: render job results if you later attach message.jobs */}
+              {/* {message.jobs && message.jobs.length > 0 && (
                 <div className="space-y-4 pl-11">
                   <h3 className="text-sm font-medium text-muted-foreground">Recommended Positions</h3>
                   <div className="grid gap-4">
@@ -119,13 +179,13 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
                     ))}
                   </div>
                 </div>
-              )}
+              )} */}
             </div>
           ))}
         </div>
       )}
 
-      {/* Loading State */}
+      {/* Loading state */}
       {isLoading && (
         <div className="flex gap-3 justify-start mb-8">
           <div className="w-8 h-8 rounded-full bg-slate text-white flex items-center justify-center">
@@ -141,7 +201,7 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
         </div>
       )}
 
-      {/* Chat Input */}
+      {/* Input */}
       <Card className="p-4 bg-surface border border-border shadow-medium">
         <form onSubmit={handleSendMessage} className="flex gap-3">
           <Input
@@ -161,7 +221,26 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
             <Send size={16} />
           </Button>
         </form>
+
+        {/* Suggested prompts (optional – keep your existing UI if you have one) */}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {[
+            "Show me CRNA positions in Florida",
+            "What are the highest paying specialties?",
+            "Find urgent care jobs with good work-life balance",
+          ].map(s => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => handleSuggestionClick(s)}
+              className="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
       </Card>
     </div>
   );
 };
+
