@@ -4,14 +4,30 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Send, Bot, User } from "lucide-react";
 import { ChatMessage } from "@/types/job";
-// import { JobCard } from "./JobCard"; // optional: wire later if you want cards
+// If you have JobCard, keep this import.
+// If not, comment this line and the fallback simple list will render.
+import { JobCard } from "./JobCard";
 
 interface ChatInterfaceProps {
   initialMessage?: string;
 }
 
-const API_URL = "https://doctor-bot-backend.onrender.com"; // ← your Render URL
+// Change to your Render URL if different
+const API_URL = "https://doctor-bot-backend.onrender.com";
 const SESSION_KEY = "sendoc_session_id";
+
+// Minimal Job shape used for rendering
+type UIJob = {
+  job_id: string;
+  title: string;
+  city: string;
+  state: string;
+  priority?: string;
+  metaLine?: string;
+  url?: string;
+  rate_numeric?: number;
+  rate_unit?: "hour" | "day";
+};
 
 export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -29,11 +45,13 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
     return id;
   }, []);
 
+  // (optional) warm the backend to avoid cold-start delay on free tier
   useEffect(() => {
-    if (initialMessage) {
-      // fire a first message if the page wants to start with one
-      void sendMessage(initialMessage);
-    }
+    fetch(`${API_URL}/`, { cache: "no-store" }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (initialMessage) void sendMessage(initialMessage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -48,18 +66,20 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
       content: text,
       timestamp: new Date(),
     };
-    setMessages(prev => [...prev, userMessage]);
+    setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
 
     // create a placeholder assistant message we will stream into
     const assistantId = `${Date.now()}-assistant`;
-    setMessages(prev => [
+    setMessages((prev) => [
       ...prev,
       {
         id: assistantId,
         role: "assistant",
         content: "",
         timestamp: new Date(),
+        // @ts-ignore allow jobs on ChatMessage
+        jobs: [] as UIJob[],
       },
     ]);
 
@@ -79,50 +99,71 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
         buffer += decoder.decode(value, { stream: true });
 
         // parse SSE chunks separated by blank lines
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
 
-        for (const ln of parts) {
+        for (const ln of chunks) {
           if (!ln.startsWith("data:")) continue;
           const payload = JSON.parse(ln.slice(5).trim());
 
           if (payload.type === "text") {
             const delta: string = payload.data || "";
-            setMessages(prev =>
-              prev.map(m =>
-                m.id === assistantId ? { ...m, content: (m.content || "") + delta } : m
+            setMessages((prev) =>
+              prev.map((m: any) =>
+                m.id === assistantId
+                  ? { ...m, content: (m.content || "") + delta }
+                  : m
               )
             );
           } else if (payload.type === "blocks") {
-            // OPTIONAL: if you want to render real job cards with <JobCard/>,
-            // map payload.data[0].items into your Job type and attach to the assistant message.
-            // For now we just append a friendly note that results were included.
-            setMessages(prev =>
-              prev.map(m =>
+            // Backend sends [{ type: "jobs", items: [...] }]
+            const items = payload.data?.[0]?.items ?? [];
+
+            // Map to the UI job type (lenient so it won't crash)
+            const mapped: UIJob[] = items.map((i: any) => {
+              const rateStr = String(i.rate || "");
+              const isDay = /day/i.test(rateStr);
+              const num = Number((rateStr.match(/\d+/)?.[0]) || 0);
+              return {
+                job_id: i.job_id,
+                title: i.title,
+                city: i.city,
+                state: i.state,
+                priority: i.priority,
+                metaLine: i.metaLine,
+                url: i.url,
+                rate_numeric: num,
+                rate_unit: isDay ? "day" : "hour",
+              };
+            });
+
+            setMessages((prev: any[]) =>
+              prev.map((m: any) =>
                 m.id === assistantId
                   ? {
                       ...m,
-                      content:
-                        (m.content || "") +
-                        "\n\nI’ve added a few positions below based on what you asked.",
+                      // attach jobs array so the UI section below can render JobCards
+                      jobs: mapped,
+                      // keep any streamed text as-is
                     }
                   : m
               )
             );
-            // Example (wire later):
-            // const items = payload.data?.[0]?.items ?? [];
-            // setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, jobs: mapToYourJobType(items) } : m));
           }
         }
       }
     } catch (err) {
-      setMessages(prev =>
-        prev.map(m =>
+      setMessages((prev) =>
+        prev.map((m: any) =>
           m.id === assistantId
-            ? { ...m, content: (m.content || "") + "\n(Sorry, something went wrong.)" }
+            ? {
+                ...m,
+                content: (m.content || "") + "\n(Sorry, something went wrong.)",
+              }
             : m
         )
       );
@@ -146,22 +187,38 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
       {/* Chat Messages */}
       {messages.length > 0 && (
         <div className="mb-8 space-y-6">
-          {messages.map((message) => (
+          {messages.map((message: any) => (
             <div key={message.id} className="space-y-4">
-              <div className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`flex gap-3 max-w-3xl ${message.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                    message.role === 'user' 
-                      ? 'bg-primary text-primary-foreground' 
-                      : 'bg-slate text-white'
-                  }`}>
-                    {message.role === 'user' ? <User size={16} /> : <Bot size={16} />}
+              <div
+                className={`flex gap-3 ${
+                  message.role === "user" ? "justify-end" : "justify-start"
+                }`}
+              >
+                <div
+                  className={`flex gap-3 max-w-3xl ${
+                    message.role === "user" ? "flex-row-reverse" : ""
+                  }`}
+                >
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                      message.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-slate text-white"
+                    }`}
+                  >
+                    {message.role === "user" ? (
+                      <User size={16} />
+                    ) : (
+                      <Bot size={16} />
+                    )}
                   </div>
-                  <Card className={`p-4 ${
-                    message.role === 'user' 
-                      ? 'bg-primary text-primary-foreground' 
-                      : 'bg-surface border border-border'
-                  }`}>
+                  <Card
+                    className={`p-4 ${
+                      message.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-surface border border-border"
+                    }`}
+                  >
                     <p className="text-sm leading-relaxed whitespace-pre-wrap">
                       {message.content}
                     </p>
@@ -169,17 +226,44 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
                 </div>
               </div>
 
-              {/* OPTIONAL: render job results if you later attach message.jobs */}
-              {/* {message.jobs && message.jobs.length > 0 && (
+              {/* Job Results (render when backend attaches jobs to this assistant turn) */}
+              {message.jobs && message.jobs.length > 0 && (
                 <div className="space-y-4 pl-11">
-                  <h3 className="text-sm font-medium text-muted-foreground">Recommended Positions</h3>
+                  <h3 className="text-sm font-medium text-muted-foreground">
+                    Recommended Positions
+                  </h3>
+
+                  {/* If you have JobCard, use it. Otherwise a simple list renders. */}
                   <div className="grid gap-4">
-                    {message.jobs.map((job) => (
-                      <JobCard key={job.job_id} job={job} />
-                    ))}
+                    {typeof JobCard === "function"
+                      ? message.jobs.map((job: UIJob) => (
+                          <JobCard key={job.job_id} job={job as any} />
+                        ))
+                      : message.jobs.map((job: UIJob) => (
+                          <Card
+                            key={job.job_id}
+                            className="p-4 bg-surface border border-border"
+                          >
+                            <div className="font-medium">{job.title}</div>
+                            <div className="text-sm text-muted-foreground">
+                              {job.city}, {job.state} • {job.priority} •{" "}
+                              {job.metaLine}
+                            </div>
+                            {job.url && (
+                              <button
+                                className="mt-2 text-sm underline"
+                                onClick={() =>
+                                  (window.location.href = job.url as string)
+                                }
+                              >
+                                View details
+                              </button>
+                            )}
+                          </Card>
+                        ))}
                   </div>
                 </div>
-              )} */}
+              )}
             </div>
           ))}
         </div>
@@ -194,8 +278,14 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
           <Card className="p-4 bg-surface border border-border">
             <div className="flex gap-2">
               <div className="w-2 h-2 bg-slate rounded-full animate-bounce"></div>
-              <div className="w-2 h-2 bg-slate rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-              <div className="w-2 h-2 bg-slate rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+              <div
+                className="w-2 h-2 bg-slate rounded-full animate-bounce"
+                style={{ animationDelay: "0.1s" }}
+              ></div>
+              <div
+                className="w-2 h-2 bg-slate rounded-full animate-bounce"
+                style={{ animationDelay: "0.2s" }}
+              ></div>
             </div>
           </Card>
         </div>
@@ -222,13 +312,13 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
           </Button>
         </form>
 
-        {/* Suggested prompts (optional – keep your existing UI if you have one) */}
+        {/* Suggested prompts */}
         <div className="mt-3 flex flex-wrap gap-2">
           {[
             "Show me CRNA positions in Florida",
             "What are the highest paying specialties?",
             "Find urgent care jobs with good work-life balance",
-          ].map(s => (
+          ].map((s) => (
             <button
               key={s}
               type="button"
@@ -243,4 +333,5 @@ export const ChatInterface = ({ initialMessage }: ChatInterfaceProps) => {
     </div>
   );
 };
+
 
