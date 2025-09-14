@@ -1,11 +1,4 @@
-import { useState, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card } from "@/components/ui/card";
-import { Send, Bot, User } from "lucide-react";
-import { ChatMessage } from "@/types/job";
-import { sampleJobs } from "@/data/jobs";
-import { JobCard } from "./JobCard";
+
 
 interface ChatInterfaceProps {
   initialMessage?: string;
