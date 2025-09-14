@@ -12,7 +12,7 @@ const Index = () => {
               <p className="text-sm text-slate">Healthcare careers, powered by AI</p>
             </div>
             <nav className="hidden md:flex items-center gap-6 text-sm">
-              <a href="#" className="text-slate hover:text-navy transition-colors">Jobs</a>
+              <a href="/jobs" className="text-slate hover:text-navy transition-colors">Jobs</a>
               <a href="#" className="text-slate hover:text-navy transition-colors">Career Digest</a>
               <a href="#" className="text-slate hover:text-navy transition-colors">About</a>
             </nav>
