@@ -20,5 +20,5 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  jobs?: Job[];
+  jobs?: any[]; // Allow flexible job types for chat display
 }
