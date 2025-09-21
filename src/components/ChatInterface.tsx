@@ -22,7 +22,7 @@ export default function ChatInterface() {
   const [reply, setReply] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
-  // Optional: direct search endpoint
+  // Optional: direct search endpoint for filters UI (if you add it later)
   async function runSearch(params: Record<string, string>) {
     setLoading(true);
     try {
@@ -104,6 +104,7 @@ export default function ChatInterface() {
     </div>
   );
 }
+
 
 
 
