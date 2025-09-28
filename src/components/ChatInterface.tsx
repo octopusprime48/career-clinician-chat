@@ -1,5 +1,5 @@
 // src/components/ChatInterface.tsx
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // ---- Types ----
 type Job = {
@@ -13,97 +13,213 @@ type Job = {
   rate_unit?: string;
 };
 
+type ChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+};
+
 // ---- Backend base URL (Render) ----
 const BASE = "https://doctor-bot-backend.onrender.com";
 
 export default function ChatInterface() {
-  const [message, setMessage] = useState("");
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [reply, setReply] = useState<string>("");
+  // Chat state
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      role: "system",
+      content:
+        "You are a job search assistant. Keep answers concise. When relevant, include nearby alternatives and return a 'jobs' array.",
+    },
+  ]);
   const [loading, setLoading] = useState(false);
 
-  // Optional: direct search endpoint for filters UI (if you add it later)
+  // Parsed data returned alongside assistant text
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [lastReply, setLastReply] = useState<string>("");
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Optional: direct search endpoint
   async function runSearch(params: Record<string, string>) {
     setLoading(true);
     try {
       const qs = new URLSearchParams(params).toString();
       const res = await fetch(`${BASE}/api/${qs ? `search?${qs}` : "jobs"}`);
       const data = await res.json();
-      const list: Job[] = Array.isArray(data) ? data : (data?.jobs ?? []);
+      const list: Job[] = Array.isArray(data) ? data : data?.jobs ?? [];
       setJobs(list);
-      setReply(list.length ? "" : "No results.");
+      setLastReply(list.length ? "" : "No results.");
     } catch {
-      setReply("Sorry, I couldn’t reach the server.");
+      setLastReply("Sorry, I couldn’t reach the server.");
       setJobs([]);
     } finally {
       setLoading(false);
     }
   }
 
+  // Core chat send
   async function sendChat() {
-    if (!message.trim()) return;
+    const text = input.trim();
+    if (!text || loading) return;
+
+    // Optimistically add the user message
+    const nextMessages: ChatMessage[] = [
+      ...messages,
+      { role: "user", content: text },
+    ];
+    setMessages(nextMessages);
+    setInput("");
     setLoading(true);
+
     try {
       const res = await fetch(`${BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message: text, messages: nextMessages }),
       });
-      const data = await res.json();
-      setReply(data?.text ?? "");
-      setJobs(Array.isArray(data?.jobs) ? data.jobs : []);
-    } catch {
-      setReply("Sorry, I couldn’t reach the server.");
+
+      // --- Handle streaming OR JSON ---
+      let assistantText = "";
+      let jobsData: Job[] = [];
+
+      if (res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let streamed = false;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          streamed = true;
+          assistantText += decoder.decode(value, { stream: true });
+          setLastReply(assistantText); // live update as chunks arrive
+        }
+
+        if (!streamed) {
+          // fallback: try JSON if no stream
+          const data = await res.json();
+          assistantText =
+            data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
+          jobsData = Array.isArray(data?.jobs) ? (data.jobs as Job[]) : [];
+        }
+      } else {
+        // no res.body: fallback to JSON
+        const data = await res.json();
+        assistantText =
+          data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
+        jobsData = Array.isArray(data?.jobs) ? (data.jobs as Job[]) : [];
+      }
+
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: assistantText,
+      };
+
+      setMessages((prev) => [...prev, assistantMsg]);
+      setLastReply(assistantText);
+      setJobs(jobsData);
+    } catch (e) {
+      const errMsg = "Sorry, I couldn’t reach the server.";
+      setMessages((prev) => [...prev, { role: "assistant", content: errMsg }]);
+      setLastReply(errMsg);
       setJobs([]);
     } finally {
       setLoading(false);
+      inputRef.current?.focus();
     }
   }
 
+  // Enter-to-send
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") sendChat();
+  }
+
+  // Strip the initial system message from the visible chat
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => m.role !== "system"),
+    [messages]
+  );
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
   return (
     <div className="space-y-6">
-      {/* Chat input */}
-      <div className="flex gap-2">
-        <input
-          className="flex-1 rounded border px-3 py-2"
-          placeholder="Ask for jobs or about a location…"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendChat()}
-        />
-        <button className="rounded bg-black px-4 py-2 text-white" onClick={sendChat}>
-          Send
-        </button>
+      {/* Chat thread */}
+      <div className="space-y-3">
+        {visibleMessages.length === 0 ? (
+          <div className="rounded-lg border p-4 text-sm opacity-70">
+            Try: “Anything in Canada?”, “Show NP/PA jobs near Pittsburgh”, or
+            “Find anesthesiology ≥ $300/hr in PA”.
+          </div>
+        ) : (
+          visibleMessages.map((m, i) => (
+            <div
+              key={i}
+              className={`rounded-lg border p-4 whitespace-pre-wrap ${
+                m.role === "assistant" ? "bg-white" : "bg-gray-50"
+              }`}
+            >
+              <div className="text-xs mb-1 opacity-60">
+                {m.role === "assistant" ? "Assistant" : "You"}
+              </div>
+              {m.content}
+            </div>
+          ))
+        )}
+
+        {loading && (
+          <div className="rounded-lg border p-4 text-sm opacity-70">
+            Thinking…
+          </div>
+        )}
       </div>
 
-      {/* LLM reply text */}
-      {reply && <div className="rounded-lg border p-4 whitespace-pre-wrap">{reply}</div>}
-
-      {/* Results */}
-      {loading ? (
-        <p>Loading…</p>
-      ) : jobs.length === 0 ? (
-        <p>No results.</p>
-      ) : (
+      {/* Job results */}
+      {jobs.length > 0 && (
         <div className="grid gap-4">
           {jobs.map((j) => (
             <a
               key={j.job_id}
               href={`/jobs/${encodeURIComponent(j.job_id)}`}
-              className="block rounded-xl p-4 shadow"
+              className="block rounded-xl p-4 shadow hover:shadow-md transition"
             >
               <div className="text-lg">{j.title}</div>
               <div className="text-sm opacity-70">
-                {[j.city, j.state].filter(Boolean).join(", ")} •{" "}
-                {j.rate_numeric ? `${j.rate_numeric}/${j.rate_unit ?? "hour"}` : ""}
+                {[j.city, j.state].filter(Boolean).join(", ")}{" "}
+                {j.rate_numeric
+                  ? ` • ${j.rate_numeric}/${j.rate_unit ?? "hour"}`
+                  : ""}
               </div>
             </a>
           ))}
         </div>
       )}
+
+      {/* Input row */}
+      <div className="flex gap-2">
+        <input
+          ref={inputRef}
+          className="flex-1 rounded border px-3 py-2"
+          placeholder="Ask for jobs or about a location…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={loading}
+        />
+        <button
+          className="rounded bg-black px-4 py-2 text-white disabled:opacity-50"
+          onClick={sendChat}
+          disabled={loading}
+        >
+          Send
+        </button>
+      </div>
     </div>
   );
 }
+
 
 
 
