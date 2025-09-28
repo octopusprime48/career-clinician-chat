@@ -22,7 +22,6 @@ type ChatMessage = {
 const BASE = "https://doctor-bot-backend.onrender.com";
 
 export default function ChatInterface() {
-  // Chat state
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -33,7 +32,6 @@ export default function ChatInterface() {
   ]);
   const [loading, setLoading] = useState(false);
 
-  // Parsed data returned alongside assistant text
   const [jobs, setJobs] = useState<Job[]>([]);
   const [lastReply, setLastReply] = useState<string>("");
 
@@ -57,12 +55,11 @@ export default function ChatInterface() {
     }
   }
 
-  // Core chat send
+  // ---- SIMPLIFIED CHAT SEND ----
   async function sendChat() {
     const text = input.trim();
     if (!text || loading) return;
 
-    // Optimistically add the user message
     const nextMessages: ChatMessage[] = [
       ...messages,
       { role: "user", content: text },
@@ -78,37 +75,10 @@ export default function ChatInterface() {
         body: JSON.stringify({ message: text, messages: nextMessages }),
       });
 
-      // --- Handle streaming OR JSON ---
-      let assistantText = "";
-      let jobsData: Job[] = [];
+      const data = await res.json();
 
-      if (res.body) {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let streamed = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          streamed = true;
-          assistantText += decoder.decode(value, { stream: true });
-          setLastReply(assistantText); // live update as chunks arrive
-        }
-
-        if (!streamed) {
-          // fallback: try JSON if no stream
-          const data = await res.json();
-          assistantText =
-            data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
-          jobsData = Array.isArray(data?.jobs) ? (data.jobs as Job[]) : [];
-        }
-      } else {
-        // no res.body: fallback to JSON
-        const data = await res.json();
-        assistantText =
-          data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
-        jobsData = Array.isArray(data?.jobs) ? (data.jobs as Job[]) : [];
-      }
+      const assistantText =
+        data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
 
       const assistantMsg: ChatMessage = {
         role: "assistant",
@@ -117,7 +87,7 @@ export default function ChatInterface() {
 
       setMessages((prev) => [...prev, assistantMsg]);
       setLastReply(assistantText);
-      setJobs(jobsData);
+      setJobs(Array.isArray(data?.jobs) ? (data.jobs as Job[]) : []);
     } catch (e) {
       const errMsg = "Sorry, I couldn’t reach the server.";
       setMessages((prev) => [...prev, { role: "assistant", content: errMsg }]);
@@ -129,12 +99,10 @@ export default function ChatInterface() {
     }
   }
 
-  // Enter-to-send
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") sendChat();
   }
 
-  // Strip the initial system message from the visible chat
   const visibleMessages = useMemo(
     () => messages.filter((m) => m.role !== "system"),
     [messages]
@@ -219,6 +187,7 @@ export default function ChatInterface() {
     </div>
   );
 }
+
 
 
 
