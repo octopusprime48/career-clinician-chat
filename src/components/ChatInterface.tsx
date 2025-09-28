@@ -39,7 +39,7 @@ export default function ChatInterface() {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Optional: direct search endpoint
+  // Optional: direct search endpoint (kept from your version)
   async function runSearch(params: Record<string, string>) {
     setLoading(true);
     try {
@@ -57,7 +57,7 @@ export default function ChatInterface() {
     }
   }
 
-  // Core chat send
+  // Core chat send that includes full history so follow-ups work
   async function sendChat() {
     const text = input.trim();
     if (!text || loading) return;
@@ -72,43 +72,23 @@ export default function ChatInterface() {
     setLoading(true);
 
     try {
+      // IMPORTANT: send the *whole* conversation, not just the latest message
       const res = await fetch(`${BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        // Keep compatibility with your backend:
+        // it can read either {message} or {messages}. We send both.
         body: JSON.stringify({ message: text, messages: nextMessages }),
       });
 
-      // --- Handle streaming OR JSON ---
-      let assistantText = "";
-      let jobsData: Job[] = [];
+      // Your backend currently returns JSON (even if it also supports SSE).
+      const data = await res.json();
 
-      if (res.body) {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let streamed = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          streamed = true;
-          assistantText += decoder.decode(value, { stream: true });
-          setLastReply(assistantText); // live update as chunks arrive
-        }
-
-        if (!streamed) {
-          // fallback: try JSON if no stream
-          const data = await res.json();
-          assistantText =
-            data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
-          jobsData = Array.isArray(data?.jobs) ? (data.jobs as Job[]) : [];
-        }
-      } else {
-        // no res.body: fallback to JSON
-        const data = await res.json();
-        assistantText =
-          data?.text ?? data?.reply ?? data?.message ?? "Sorry, I didn’t get that.";
-        jobsData = Array.isArray(data?.jobs) ? (data.jobs as Job[]) : [];
-      }
+      const assistantText: string =
+        data?.text ??
+        data?.reply ??
+        data?.message ??
+        "Sorry, I didn’t get that.";
 
       const assistantMsg: ChatMessage = {
         role: "assistant",
@@ -117,7 +97,9 @@ export default function ChatInterface() {
 
       setMessages((prev) => [...prev, assistantMsg]);
       setLastReply(assistantText);
-      setJobs(jobsData);
+
+      // If backend attached jobs, render them
+      setJobs(Array.isArray(data?.jobs) ? (data.jobs as Job[]) : []);
     } catch (e) {
       const errMsg = "Sorry, I couldn’t reach the server.";
       setMessages((prev) => [...prev, { role: "assistant", content: errMsg }]);
@@ -125,6 +107,7 @@ export default function ChatInterface() {
       setJobs([]);
     } finally {
       setLoading(false);
+      // keep focus on the input for quick follow-ups
       inputRef.current?.focus();
     }
   }
@@ -141,6 +124,7 @@ export default function ChatInterface() {
   );
 
   useEffect(() => {
+    // autofocus on mount
     inputRef.current?.focus();
   }, []);
 
@@ -170,13 +154,11 @@ export default function ChatInterface() {
         )}
 
         {loading && (
-          <div className="rounded-lg border p-4 text-sm opacity-70">
-            Thinking…
-          </div>
+          <div className="rounded-lg border p-4 text-sm opacity-70">Thinking…</div>
         )}
       </div>
 
-      {/* Job results */}
+      {/* Job results (only show when there are any) */}
       {jobs.length > 0 && (
         <div className="grid gap-4">
           {jobs.map((j) => (
@@ -219,7 +201,6 @@ export default function ChatInterface() {
     </div>
   );
 }
-
 
 
 
